@@ -205,3 +205,37 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ML-specific ignores
+# Model checkpoints and artifacts
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+checkpoints/
+runs/
+wandb/
+
+# Data directories
+src/data/raw/*
+!src/data/raw/.gitkeep
+src/data/processed/*
+!src/data/processed/.gitkeep
+
+# Logs and outputs
+logs/
+outputs/
+results/
+predictions/
+
+# HuggingFace cache
+.cache/
+transformers_cache/
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
