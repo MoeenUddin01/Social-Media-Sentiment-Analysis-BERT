@@ -1,0 +1,35 @@
+model:
+  name: "bert-base-uncased"
+  num_labels: 3
+  dropout: 0.3
+
+training:
+  batch_size: 32
+  max_length: 128
+  epochs: 3
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_steps: 500
+  gradual_unfreeze: true
+  freeze_epochs: 1
+
+data:
+  train_file: "train_cleaned.csv"
+  val_file: "val_cleaned.csv"
+  test_file: "test_cleaned.csv"
+  text_column: "cleaned_text"
+  label_column: "label"
+
+checkpoints:
+  save_dir: "artifacts/checkpoints"
+  save_best: true
+  save_every_epoch: false
+
+evaluation:
+  save_plots: true
+  report_dir: "artifacts/checkpoints"
+  top_k_checkpoints: 3
+
+logging:
+  level: "INFO"
+  log_dir: "artifacts/logs"

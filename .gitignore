@@ -239,3 +239,6 @@ transformers_cache/
 # OS files
 .DS_Store
 Thumbs.db
+artifacts/
+dataset/
+
