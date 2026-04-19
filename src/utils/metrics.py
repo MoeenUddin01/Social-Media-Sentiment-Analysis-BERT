@@ -12,6 +12,82 @@ if TYPE_CHECKING:
     import numpy as np
 
 
+class SentimentMetrics:
+    """Computer for sentiment classification metrics.
+
+    Calculates accuracy, precision, recall, F1 score, and confusion
+    matrix for multi-class sentiment analysis.
+
+    All methods are static and operate on numpy arrays of predictions
+    and labels.
+    """
+
+    @staticmethod
+    def compute_all(
+        y_true: "np.ndarray",
+        y_pred: "np.ndarray",
+        y_probs: "np.ndarray" | None = None,
+    ) -> dict[str, float]:
+        """Compute all classification metrics.
+
+        Args:
+            y_true: Ground truth labels (N,).
+            y_pred: Predicted labels (N,).
+            y_probs: Optional probability predictions (N, num_classes).
+
+        Returns:
+            Dictionary containing:
+                - accuracy: Overall accuracy
+                - macro_f1: Macro-averaged F1 score
+                - weighted_f1: Weighted-averaged F1 score
+                - precision: Macro-averaged precision
+                - recall: Macro-averaged recall
+                - per_class_precision: Dict of per-class precision scores
+                - per_class_recall: Dict of per-class recall scores
+                - per_class_f1: Dict of per-class F1 scores
+                - confusion_matrix: Confusion matrix as numpy array
+        """
+        from sklearn.metrics import (
+            accuracy_score,
+            confusion_matrix,
+            f1_score,
+            precision_score,
+            recall_score,
+        )
+
+        accuracy = accuracy_score(y_true, y_pred)
+        macro_f1 = f1_score(y_true, y_pred, average="macro")
+        weighted_f1 = f1_score(y_true, y_pred, average="weighted")
+        precision = precision_score(y_true, y_pred, average="macro")
+        recall = recall_score(y_true, y_pred, average="macro")
+        cm = confusion_matrix(y_true, y_pred)
+
+        # Per-class metrics
+        per_class_f1 = f1_score(y_true, y_pred, average=None)
+        per_class_precision = precision_score(y_true, y_pred, average=None)
+        per_class_recall = recall_score(y_true, y_pred, average=None)
+
+        num_classes = len(per_class_f1)
+
+        return {
+            "accuracy": float(accuracy),
+            "macro_f1": float(macro_f1),
+            "weighted_f1": float(weighted_f1),
+            "precision": float(precision),
+            "recall": float(recall),
+            "per_class_precision": {
+                str(i): float(per_class_precision[i]) for i in range(num_classes)
+            },
+            "per_class_recall": {
+                str(i): float(per_class_recall[i]) for i in range(num_classes)
+            },
+            "per_class_f1": {
+                str(i): float(per_class_f1[i]) for i in range(num_classes)
+            },
+            "confusion_matrix": cm,
+        }
+
+
 class MetricsComputer:
     """Computer for classification metrics.
 
