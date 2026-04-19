@@ -95,6 +95,35 @@ loader = DataLoader(dataset, batch_size=32, shuffle=True)
 # - 'labels': tensor of class labels (batch_size,)
 ```
 
+### Data Pipeline (End-to-End)
+
+**Using DataPipeline for full preprocessing workflow:**
+
+```python
+from src.pipelines.data_preprocessin import DataPipeline
+from src.models.tokenizer import SentimentTokenizer
+
+# Initialize with config and tokenizer
+tokenizer = SentimentTokenizer()
+pipeline = DataPipeline(config_path="config.yaml", tokenizer=tokenizer)
+
+# Run full pipeline: load -> clean -> split -> create DataLoaders
+train_loader, val_loader, test_loader = pipeline.run("raw_data.csv")
+
+# Access individual steps
+raw_df = pipeline.load_raw("raw_data.csv")
+cleaned_df = pipeline.clean(raw_df)
+train_ds, val_ds, test_ds = pipeline.build_datasets(cleaned_df)
+```
+
+**Load checkpoint for inference:**
+
+```python
+# Restore pipeline with saved artifacts
+pipeline = DataPipeline.load_checkpoint("artifacts/checkpoints/run_20240101/")
+test_loader = pipeline.build_dataloaders(None, None, test_dataset)
+```
+
 ### Model
 
 **Using BertSentimentClassifier:**
@@ -305,6 +334,86 @@ logging:
 - Saves best checkpoint based on validation accuracy
 - Saves final checkpoint and tokenizer to `artifacts/`
 
+### Training Pipeline (End-to-End)
+
+**Using TrainingPipeline with callbacks and checkpointing:**
+
+```python
+from src.pipelines.model_training import TrainingPipeline
+from src.pipelines.callbacks import EarlyStopping, ModelCheckpoint
+from src.pipelines.scheduler import get_optimizer, get_scheduler
+from src.models.evaluator import ModelEvaluator
+import torch
+
+# Setup
+model = BertSentimentClassifier(num_labels=3)
+optimizer = get_optimizer(model, config)
+scheduler = get_scheduler(optimizer, num_training_steps, config)
+evaluator = ModelEvaluator(model, device)
+
+# Callbacks
+callbacks = [
+    EarlyStopping(monitor="val_loss", patience=3, mode="min"),
+    ModelCheckpoint(monitor="val_accuracy", save_best_only=True),
+]
+
+# Initialize pipeline
+pipeline = TrainingPipeline(
+    model=model,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    optimizer=optimizer,
+    scheduler=scheduler,
+    evaluator=evaluator,
+    callbacks=callbacks,
+    device=device,
+    config=config,
+)
+
+# Train with automatic validation and checkpointing
+history = pipeline.fit(num_epochs=10)
+
+# Save all artifacts (model, tokenizer, config, metrics)
+pipeline.save_all_artifacts("artifacts/checkpoints/run_20240101/")
+```
+
+### Evaluation Pipeline (End-to-End)
+
+**Using EvaluationPipeline for model evaluation:**
+
+```python
+from src.pipelines.model_evaluation import EvaluationPipeline
+
+# Load from checkpoint
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+pipeline = EvaluationPipeline(
+    checkpoint_dir="artifacts/checkpoints/run_20240101/",
+    device=device,
+)
+
+# Run full evaluation
+metrics = pipeline.run(test_loader)
+print(f"Accuracy: {metrics['accuracy']:.4f}")
+print(f"Macro F1: {metrics['macro_f1']:.4f}")
+
+# Evaluate single text
+result = pipeline.run_single("This product is amazing!")
+print(f"Predicted: {result['predicted_label']}")
+print(f"Confidence: {result['confidence']:.4f}")
+
+# Compare multiple runs
+import pandas as pd
+df = pipeline.compare_runs([
+    "artifacts/checkpoints/run_20240101/",
+    "artifacts/checkpoints/run_20240102/",
+])
+print(df)  # DataFrame with metrics per run
+
+# Find best checkpoint
+best_path = EvaluationPipeline.load_best_checkpoint()
+print(f"Best model at: {best_path}")
+```
+
 ### Evaluation
 
 **Using ModelEvaluator (programmatic):**
@@ -349,10 +458,13 @@ print(f"All probs: {result['class_probabilities']}")
 **Using CLI:**
 
 ```bash
-# Evaluate with default test data
-python main.py evaluate --checkpoint artifacts/checkpoints/
+# Train with default config
+python main.py train --config config.yaml --data-file dataset/raw/train.csv
 
-# Specify custom test data and output directory
+# Evaluate with default test data
+python main.py evaluate --checkpoint artifacts/checkpoints/ --test-data dataset/processed/test_cleaned.csv
+
+# Specify custom output directory
 python main.py evaluate \
     --checkpoint artifacts/checkpoints/best_model.pt \
     --test-data dataset/processed/test_cleaned.csv \
