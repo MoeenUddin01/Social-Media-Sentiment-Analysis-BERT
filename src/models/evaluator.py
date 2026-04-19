@@ -15,16 +15,12 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from sklearn.metrics import (
-    accuracy_score,
     classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
 )
 
 from src.models.bert_classifier import BertSentimentClassifier
 from src.models.tokenizer import SentimentTokenizer
+from src.pipelines.evaluator import Evaluator
 from src.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -71,7 +67,7 @@ class ModelEvaluator:
     def evaluate(self, dataloader: DataLoader) -> dict[str, float | np.ndarray]:
         """Evaluate model on a dataloader.
 
-        Runs the full dataloader and computes comprehensive metrics.
+        Delegates to Evaluator.full_eval() for prediction and metric computation.
 
         Args:
             dataloader: DataLoader containing evaluation data.
@@ -85,25 +81,14 @@ class ModelEvaluator:
                 - recall: Macro-averaged recall
                 - confusion_matrix: Confusion matrix as numpy array
         """
-        all_preds, all_labels, all_probs = self.predict_proba(dataloader)
+        # Use Evaluator for full evaluation
+        evaluator = Evaluator(self.model, self.device, self.label_map)
+        metrics = evaluator.full_eval(dataloader)
 
-        accuracy = accuracy_score(all_labels, all_preds)
-        macro_f1 = f1_score(all_labels, all_preds, average="macro")
-        weighted_f1 = f1_score(all_labels, all_preds, average="weighted")
-        precision = precision_score(all_labels, all_preds, average="macro")
-        recall = recall_score(all_labels, all_preds, average="macro")
-        cm = confusion_matrix(all_labels, all_preds)
-
-        metrics = {
-            "accuracy": float(accuracy),
-            "macro_f1": float(macro_f1),
-            "weighted_f1": float(weighted_f1),
-            "precision": float(precision),
-            "recall": float(recall),
-            "confusion_matrix": cm,
-        }
-
-        logger.info(f"Evaluation complete - Accuracy: {accuracy:.4f}, Macro F1: {macro_f1:.4f}")
+        logger.info(
+            f"Evaluation complete - Accuracy: {metrics['accuracy']:.4f}, "
+            f"Macro F1: {metrics['macro_f1']:.4f}"
+        )
         return metrics
 
     def predict_proba(

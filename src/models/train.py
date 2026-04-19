@@ -326,18 +326,22 @@ def train(config: dict[str, Any] | None = None) -> None:
             print("  Strategy: All layers unfrozen")
 
         # Get optimizer with layer-wise learning rate decay
-        param_groups = fine_tuner.get_parameter_groups(
-            base_lr=base_lr, decay_rate=0.95
-        )
+        param_groups = fine_tuner.get_parameter_groups(base_lr=base_lr, decay_rate=0.95)
         optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
 
         # Train
         train_metrics = train_epoch(model, train_loader, optimizer, device)
-        print(f"  Train - Loss: {train_metrics['loss']:.4f}, " f"Accuracy: {train_metrics['accuracy']:.4f}")
+        print(
+            f"  Train - Loss: {train_metrics['loss']:.4f}, "
+            f"Accuracy: {train_metrics['accuracy']:.4f}"
+        )
 
         # Validate
         val_metrics = validate(model, val_loader, device)
-        print(f"  Val   - Loss: {val_metrics['loss']:.4f}, " f"Accuracy: {val_metrics['accuracy']:.4f}")
+        print(
+            f"  Val   - Loss: {val_metrics['loss']:.4f}, "
+            f"Accuracy: {val_metrics['accuracy']:.4f}"
+        )
 
         # Save checkpoint
         save_best = config.get("checkpoints", {}).get("save_best", True)
@@ -349,7 +353,10 @@ def train(config: dict[str, Any] | None = None) -> None:
 
     print("\nTraining complete!")
     if best_checkpoint_path:
-        print(f"Best checkpoint: {best_checkpoint_path} " f"(accuracy: {best_val_accuracy:.4f})")
+        print(
+            f"Best checkpoint: {best_checkpoint_path} "
+            f"(accuracy: {best_val_accuracy:.4f})"
+        )
 
     # Save final checkpoint
     final_checkpoint = model.save("final_model.pt")
@@ -367,7 +374,10 @@ def train(config: dict[str, Any] | None = None) -> None:
 
     print("\nRunning final evaluation on validation set...")
     eval_metrics = evaluator.evaluate(val_loader)
-    print(f"Final eval - Accuracy: {eval_metrics['accuracy']:.4f}, " f"Macro F1: {eval_metrics['macro_f1']:.4f}")
+    print(
+        f"Final eval - Accuracy: {eval_metrics['accuracy']:.4f}, "
+        f"Macro F1: {eval_metrics['macro_f1']:.4f}"
+    )
 
     # Save evaluation report
     checkpoint_dir = final_checkpoint.parent
@@ -376,4 +386,85 @@ def train(config: dict[str, Any] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    train()
+    import yaml
+
+    from src.models.evaluator import ModelEvaluator
+    from src.pipelines.callbacks import EarlyStopping, ModelCheckpoint
+    from src.pipelines.model_training import TrainingPipeline
+    from src.pipelines.scheduler import get_optimizer, get_scheduler
+
+    # Load config
+    config_path = pathlib.Path("config.yaml")
+    if config_path.exists():
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+    else:
+        config = get_default_config()
+
+    # Initialize device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # Initialize tokenizer and model
+    tokenizer = SentimentTokenizer()
+    num_labels = config.get("model", {}).get("num_labels", 3)
+    model = BertSentimentClassifier(num_labels=num_labels)
+    model.to(device)
+    print(f"Model initialized with {num_labels} labels")
+
+    # Create DataLoaders
+    train_loader, val_loader = create_dataloaders(tokenizer, config)
+    print(
+        f"DataLoaders created: {len(train_loader)} train, {len(val_loader)} val batches"
+    )
+
+    # Calculate total training steps for scheduler
+    num_epochs = config.get("training", {}).get("num_epochs", 10)
+    num_training_steps = len(train_loader) * num_epochs
+
+    # Initialize optimizer and scheduler
+    optimizer = get_optimizer(model, config)
+    scheduler = get_scheduler(optimizer, num_training_steps, config)
+    print("Optimizer and scheduler initialized")
+
+    # Initialize evaluator
+    label_map = {0: "negative", 1: "neutral", 2: "positive"}
+    evaluator = ModelEvaluator(model, device, label_map)
+
+    # Initialize callbacks
+    callbacks = [
+        EarlyStopping(patience=3, min_delta=0.0, mode="max", monitor="val_accuracy"),
+        ModelCheckpoint(
+            monitor="val_accuracy",
+            mode="max",
+            save_best_only=True,
+            save_dir=config.get("training", {}).get(
+                "checkpoint_dir", "artifacts/checkpoints"
+            ),
+        ),
+    ]
+
+    # Initialize TrainingPipeline
+    pipeline = TrainingPipeline(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        evaluator=evaluator,
+        callbacks=callbacks,
+        device=device,
+        config=config,
+    )
+    print("TrainingPipeline initialized")
+
+    # Train
+    history = pipeline.fit(num_epochs)
+    print(f"\nTraining complete! Best val accuracy: {max(history['val_accuracy']):.4f}")
+
+    # Save all artifacts
+    checkpoint_dir = pathlib.Path(
+        config.get("training", {}).get("checkpoint_dir", "artifacts/checkpoints")
+    )
+    pipeline.save_all_artifacts(checkpoint_dir)
+    print(f"All artifacts saved to: {checkpoint_dir}")
