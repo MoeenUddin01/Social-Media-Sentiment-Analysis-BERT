@@ -4,6 +4,16 @@
 
 AI coding assistant for a BERT-based social media sentiment analysis project. Operates within the Python package structure, respects import hierarchies, and maintains data flow through designated pipeline modules.
 
+## Tools
+
+- DagsHub: experiment tracking dashboard with live MLflow integration
+- MLflow: metric and artifact logging backend
+- URL pattern: https://dagshub.com/{owner}/{repo}/experiments
+- Transformers: HuggingFace library for BERT models
+- PyTorch: deep learning framework
+- ruff: Python linting and formatting
+- uv: fast Python package manager
+
 ## File Map
 
 ### Root

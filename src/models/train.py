@@ -7,6 +7,7 @@ and runs the training pipeline.
 from __future__ import annotations
 
 import pathlib
+from datetime import datetime
 from typing import Any
 
 import torch
@@ -392,6 +393,7 @@ if __name__ == "__main__":
     from src.pipelines.callbacks import EarlyStopping, ModelCheckpoint
     from src.pipelines.model_training import TrainingPipeline
     from src.pipelines.scheduler import get_optimizer, get_scheduler
+    from src.utils.logger import DagsHubLogger
 
     # Load config
     config_path = pathlib.Path("config.yaml")
@@ -400,6 +402,12 @@ if __name__ == "__main__":
             config = yaml.safe_load(f)
     else:
         config = get_default_config()
+
+    # Initialize DagsHubLogger for experiment tracking
+    dagshub_logger: DagsHubLogger | None = None
+    if config.get("dagshub", {}).get("enabled", True):
+        dagshub_logger = DagsHubLogger(config)
+        print("DagsHub logger initialized for experiment tracking")
 
     # Initialize device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -444,7 +452,7 @@ if __name__ == "__main__":
         ),
     ]
 
-    # Initialize TrainingPipeline
+    # Initialize TrainingPipeline with DagsHubLogger
     pipeline = TrainingPipeline(
         model=model,
         train_loader=train_loader,
@@ -455,16 +463,21 @@ if __name__ == "__main__":
         callbacks=callbacks,
         device=device,
         config=config,
+        dagshub_logger=dagshub_logger,
     )
     print("TrainingPipeline initialized")
 
     # Train
     history = pipeline.fit(num_epochs)
-    print(f"\nTraining complete! Best val accuracy: {max(history['val_accuracy']):.4f}")
+    best_val_accuracy = max(history["val_accuracy"])
+    best_val_f1 = max(history["val_f1"]) if history["val_f1"] else 0.0
+    print(f"\nTraining complete! Best val accuracy: {best_val_accuracy:.4f}")
 
     # Save all artifacts
+    run_name = f"{config.get('model', {}).get('name', 'bert')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     checkpoint_dir = pathlib.Path(
         config.get("training", {}).get("checkpoint_dir", "artifacts/checkpoints")
-    )
+    ) / run_name
     pipeline.save_all_artifacts(checkpoint_dir)
     print(f"All artifacts saved to: {checkpoint_dir}")
+    print(f"Run: {run_name} — val_f1: {best_val_f1:.4f}")

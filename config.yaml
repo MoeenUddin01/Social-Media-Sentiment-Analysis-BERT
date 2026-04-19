@@ -45,3 +45,11 @@ evaluation:
 logging:
   level: "INFO"
   log_dir: "artifacts/logs"
+
+dagshub:
+  enabled: true
+  repo_owner: "your_dagshub_username"
+  repo_name: "bert-sentiment"
+  experiment_name: "bert-sentiment-analysis"
+  tracking_uri: "https://dagshub.com/{repo_owner}/{repo_name}.mlflow"
+  log_every_n_batches: 1

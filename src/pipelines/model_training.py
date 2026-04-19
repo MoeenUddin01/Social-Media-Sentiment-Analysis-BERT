@@ -19,7 +19,7 @@ from src.models.evaluator import ModelEvaluator
 from src.models.tokenizer import SentimentTokenizer
 from src.pipelines.callbacks import EarlyStopping, ModelCheckpoint
 from src.pipelines.evaluator import Evaluator
-from src.utils.logger import get_logger
+from src.utils.logger import DagsHubLogger, get_logger
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -34,6 +34,7 @@ class TrainingPipeline:
 
     Orchestrates the full training workflow: training epochs, validation,
     callbacks (early stopping, checkpointing), and artifact management.
+    Integrates with DagsHub for live experiment tracking.
 
     Attributes:
         model: BERT sentiment classifier model.
@@ -46,6 +47,7 @@ class TrainingPipeline:
         device: Device to run training on.
         config: Training configuration dictionary.
         logger: Logger instance.
+        dagshub_logger: DagsHubLogger for MLflow tracking.
         history: Training history dictionary.
         best_metrics: Best validation metrics seen.
     """
@@ -61,6 +63,7 @@ class TrainingPipeline:
         callbacks: list[EarlyStopping | ModelCheckpoint],
         device: torch.device,
         config: dict[str, Any],
+        dagshub_logger: DagsHubLogger | None = None,
     ) -> None:
         """Initialize the TrainingPipeline.
 
@@ -74,6 +77,8 @@ class TrainingPipeline:
             callbacks: List of callback objects (EarlyStopping, ModelCheckpoint).
             device: Device to run training on (CPU or CUDA).
             config: Training configuration dictionary.
+            dagshub_logger: DagsHubLogger for MLflow experiment tracking.
+                If None, DagsHub logging is disabled.
         """
         self.model = model
         self.train_loader = train_loader
@@ -85,6 +90,7 @@ class TrainingPipeline:
         self.device = device
         self.config = config
         self.logger: Logger = get_logger(__name__)
+        self.dagshub_logger = dagshub_logger
 
         self.history: dict[str, list[float]] = {
             "train_loss": [],
@@ -95,9 +101,12 @@ class TrainingPipeline:
         }
         self.best_metrics: dict[str, float] = {}
         self._criterion = torch.nn.CrossEntropyLoss()
+        self._total_batches = len(train_loader)
 
     def train_epoch(self, epoch: int) -> dict[str, float]:
         """Train for one epoch.
+
+        Logs batch metrics to DagsHub every batch for live chart updates.
 
         Args:
             epoch: Current epoch number (0-indexed).
@@ -110,7 +119,7 @@ class TrainingPipeline:
         correct = 0
         total = 0
 
-        for batch in self.train_loader:
+        for batch_idx, batch in enumerate(self.train_loader):
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
             labels = batch["labels"].to(self.device)
@@ -130,10 +139,26 @@ class TrainingPipeline:
             self.optimizer.step()
             self.scheduler.step()
 
-            total_loss += loss.item()
+            # Calculate batch metrics
+            batch_loss = loss.item()
             predictions = torch.argmax(logits, dim=-1)
-            correct += (predictions == labels).sum().item()
-            total += labels.size(0)
+            batch_correct = (predictions == labels).sum().item()
+            batch_total = labels.size(0)
+            batch_accuracy = batch_correct / batch_total if batch_total > 0 else 0.0
+
+            total_loss += batch_loss
+            correct += batch_correct
+            total += batch_total
+
+            # Log batch metrics to DagsHub
+            if self.dagshub_logger is not None:
+                self.dagshub_logger.log_batch_metrics(
+                    batch=batch_idx,
+                    epoch=epoch,
+                    loss=batch_loss,
+                    accuracy=batch_accuracy,
+                    total_batches=self._total_batches,
+                )
 
         avg_loss = (
             total_loss / len(self.train_loader) if len(self.train_loader) > 0 else 0.0
@@ -142,13 +167,18 @@ class TrainingPipeline:
 
         return {"train_loss": avg_loss, "train_accuracy": accuracy}
 
-    def validate(self, epoch: int) -> dict[str, float]:
+    def validate(
+        self, epoch: int, train_metrics: dict[str, float] | None = None
+    ) -> dict[str, float]:
         """Validate the model on validation set.
 
-        Uses Evaluator.full_eval() for metric computation.
+        Uses Evaluator.full_eval() for metric computation. Logs epoch metrics
+        to DagsHub after validation completes.
 
         Args:
             epoch: Current epoch number (0-indexed).
+            train_metrics: Training metrics from current epoch to log alongside
+                validation metrics. Defaults to None.
 
         Returns:
             Dictionary with val_loss, val_accuracy, and val_f1.
@@ -176,14 +206,43 @@ class TrainingPipeline:
             total_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0.0
         )
 
-        return {
+        val_metrics = {
             "val_loss": avg_loss,
             "val_accuracy": metrics["accuracy"],
             "val_f1": metrics["macro_f1"],
+            "macro_f1": metrics["macro_f1"],
+            "weighted_f1": metrics.get("weighted_f1", 0.0),
+            "precision": metrics.get("precision", 0.0),
+            "recall": metrics.get("recall", 0.0),
         }
+
+        # Log epoch metrics to DagsHub
+        if self.dagshub_logger is not None and train_metrics is not None:
+            # Get current learning rate from scheduler
+            current_lr = self.optimizer.param_groups[0]["lr"]
+            self.dagshub_logger.log_epoch_metrics(
+                epoch=epoch,
+                train_metrics=train_metrics,
+                val_metrics=val_metrics,
+                learning_rate=current_lr,
+            )
+
+            # Log confusion matrix if available
+            if "confusion_matrix" in metrics:
+                label_names = ["negative", "neutral", "positive"]
+                self.dagshub_logger.log_confusion_matrix(
+                    cm=metrics["confusion_matrix"],
+                    label_names=label_names,
+                    step=epoch,
+                )
+
+        return val_metrics
 
     def fit(self, num_epochs: int) -> dict[str, list[float]]:
         """Run the full training loop.
+
+        Initializes DagsHub logging if enabled, trains for specified epochs,
+        and logs final metrics.
 
         Args:
             num_epochs: Number of epochs to train for.
@@ -193,11 +252,17 @@ class TrainingPipeline:
         """
         self.logger.info(f"Starting training for {num_epochs} epochs")
 
+        # Start DagsHub logging if enabled
+        if self.dagshub_logger is not None:
+            self.dagshub_logger.start_run()
+            self.dagshub_logger.log_config(self.config)
+            self.logger.info("DagsHub logging started")
+
         for epoch in range(num_epochs):
             self.logger.info(f"Epoch {epoch + 1}/{num_epochs}")
 
             train_metrics = self.train_epoch(epoch)
-            val_metrics = self.validate(epoch)
+            val_metrics = self.validate(epoch, train_metrics=train_metrics)
 
             combined_metrics = {**train_metrics, **val_metrics}
 
@@ -242,6 +307,11 @@ class TrainingPipeline:
                 break
 
         self.logger.info("Training complete")
+
+        # End DagsHub logging if enabled
+        if self.dagshub_logger is not None:
+            self.dagshub_logger.end_run()
+
         return self.history
 
     def save_checkpoint(
@@ -310,60 +380,192 @@ class TrainingPipeline:
         self.logger.info(f"Saved checkpoint to {save_dir}")
         return save_dir
 
-    def save_all_artifacts(self, checkpoint_dir: pathlib.Path | str) -> None:
-        """Save all training artifacts.
+    def save_all_artifacts(
+        self,
+        checkpoint_dir: pathlib.Path | str,
+        preprocessor_config: dict[str, Any] | None = None,
+        class_weights: list[float] | None = None,
+        run_metadata: dict[str, Any] | None = None,
+        test_metrics: dict[str, float] | None = None,
+    ) -> pathlib.Path:
+        """Save all training artifacts for prediction and reproducibility.
 
-        Saves tokenizer, model_config.json, train_config.yaml, label_map.json,
-        metrics.json, and run_info.json. Also calls evaluator.save_report.
+        Saves model weights, tokenizer, configs, and metadata needed for
+        inference and training reproduction.
 
         Args:
             checkpoint_dir: Directory to save artifacts to.
+            preprocessor_config: Preprocessor settings used during training.
+                Defaults to None (uses default settings).
+            class_weights: Class weights for imbalanced data. Defaults to None.
+            run_metadata: Additional run metadata (timestamp, seed, device, etc).
+                Defaults to None.
+            test_metrics: Test set metrics to log to DagsHub. Defaults to None.
+
+        Returns:
+            Path where artifacts were saved.
         """
         checkpoint_path = pathlib.Path(checkpoint_dir)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
 
-        model_config = self.config.get("model", {})
+        # 1. Save model.pt - model weights
+        model_path = checkpoint_path / "model.pt"
+        torch.save(self.model.state_dict(), model_path)
+
+        # 2. Save tokenizer/ directory
+        tokenizer_path = checkpoint_path / "tokenizer"
+        tokenizer_path.mkdir(parents=True, exist_ok=True)
+        tokenizer = SentimentTokenizer(
+            model_name=self.config.get("model", {}).get("name", "bert-base-uncased")
+        )
+        tokenizer.save(tokenizer_path)
+
+        # 3. Save model_config.json - architecture config
+        model_config = {
+            "model_name": self.config.get("model", {}).get("name", "bert-base-uncased"),
+            "num_labels": self.config.get("model", {}).get("num_labels", 3),
+            "max_length": self.config.get("training", {}).get("max_length", 128),
+            "dropout": self.config.get("model", {}).get("dropout", 0.3),
+            "hidden_size": 768,  # bert-base-uncased default
+        }
         model_config_path = checkpoint_path / "model_config.json"
         with open(model_config_path, "w", encoding="utf-8") as f:
             json.dump(model_config, f, indent=2)
 
-        train_config_path = checkpoint_path / "train_config.yaml"
-        import yaml
-
-        with open(train_config_path, "w", encoding="utf-8") as f:
-            yaml.dump(self.config, f, default_flow_style=False)
-
-        label_map = {0: "negative", 1: "neutral", 2: "positive"}
+        # 4. Save label_map.json - bidirectional mapping
+        label_map = {
+            "int_to_label": {"0": "negative", "1": "neutral", "2": "positive"},
+            "label_to_int": {"negative": 0, "neutral": 1, "positive": 2},
+        }
         label_map_path = checkpoint_path / "label_map.json"
         with open(label_map_path, "w", encoding="utf-8") as f:
             json.dump(label_map, f, indent=2)
 
+        # 5. Save preprocessor_config.json
+        if preprocessor_config is None:
+            preprocessor_config = {
+                "remove_urls": True,
+                "remove_mentions": True,
+                "remove_hashtags": False,
+                "lowercase": True,
+                "handle_emojis": True,
+            }
+        preprocessor_config_path = checkpoint_path / "preprocessor_config.json"
+        with open(preprocessor_config_path, "w", encoding="utf-8") as f:
+            json.dump(preprocessor_config, f, indent=2)
+
+        # 6. Save class_weights.json
+        if class_weights is None:
+            class_weights = [1.0, 1.0, 1.0]  # Default equal weights
+        class_weights_path = checkpoint_path / "class_weights.json"
+        with open(class_weights_path, "w", encoding="utf-8") as f:
+            json.dump({"weights": class_weights}, f, indent=2)
+
+        # 7. Save train_config.yaml - copy of config at training time
+        import shutil
+        import yaml
+
+        train_config_path = checkpoint_path / "train_config.yaml"
+        with open(train_config_path, "w", encoding="utf-8") as f:
+            yaml.dump(self.config, f, default_flow_style=False)
+
+        # 8. Save metrics.json - per-epoch metrics
         metrics_path = checkpoint_path / "metrics.json"
         with open(metrics_path, "w", encoding="utf-8") as f:
             json.dump(self.history, f, indent=2)
 
+        # 9. Save run_info.json - run metadata
+        from datetime import datetime
+
+        if run_metadata is None:
+            run_metadata = {}
+
+        best_epoch = 0
+        if self.history["val_accuracy"]:
+            best_epoch = self.history["val_accuracy"].index(
+                max(self.history["val_accuracy"])
+            )
+
         run_info = {
-            "num_epochs": len(self.history["train_loss"]),
-            "final_train_loss": self.history["train_loss"][-1]
-            if self.history["train_loss"]
-            else None,
-            "final_val_accuracy": self.history["val_accuracy"][-1]
-            if self.history["val_accuracy"]
-            else None,
-            "best_val_accuracy": max(self.history["val_accuracy"])
-            if self.history["val_accuracy"]
-            else None,
+            "timestamp": datetime.now().strftime("%Y-%m-%d_%H%M%S"),
+            "run_name": checkpoint_path.name,
+            "seed": self.config.get("training", {}).get("seed", 42),
+            "device": str(self.device),
+            "train_size": len(self.train_loader.dataset) if hasattr(self.train_loader, "dataset") else 0,
+            "val_size": len(self.val_loader.dataset) if hasattr(self.val_loader, "dataset") else 0,
+            "best_epoch": best_epoch,
+            "early_stopped": False,
+            "final_val_f1": max(self.history["val_f1"]) if self.history["val_f1"] else 0.0,
         }
+        run_info.update(run_metadata)
         run_info_path = checkpoint_path / "run_info.json"
         with open(run_info_path, "w", encoding="utf-8") as f:
             json.dump(run_info, f, indent=2)
 
-        tokenizer_path = checkpoint_path / "tokenizer"
-        tokenizer = SentimentTokenizer(
-            model_name=model_config.get("name", "bert-base-uncased")
-        )
-        tokenizer.save(tokenizer_path)
-
+        # Save evaluation report (plots)
         self.evaluator.save_report(checkpoint_path)
 
+        # Update registry
+        self._update_registry(checkpoint_path, run_info, label_map)
+
+        # Log artifacts to DagsHub if enabled
+        if self.dagshub_logger is not None:
+            self.dagshub_logger.log_plots(checkpoint_path)
+            self.dagshub_logger.log_model_artifact(checkpoint_path)
+
+            if test_metrics is not None:
+                self.dagshub_logger.log_test_metrics(test_metrics)
+
+            self.logger.info("Logged all artifacts to DagsHub")
+
         self.logger.info(f"Saved all artifacts to {checkpoint_path}")
+        return checkpoint_path
+
+    def _update_registry(
+        self,
+        checkpoint_path: pathlib.Path,
+        run_info: dict[str, Any],
+        label_map: dict[str, dict],
+    ) -> None:
+        """Update the checkpoint registry with new run information.
+
+        Args:
+            checkpoint_path: Path to the checkpoint directory.
+            run_info: Run metadata dictionary.
+            label_map: Label mapping dictionary.
+        """
+        registry_path = pathlib.Path("src/models/checkpoints/registry.json")
+        registry_path.parent.mkdir(parents=True, exist_ok=True)
+
+        registry: dict[str, Any] = {"best_checkpoint": "", "checkpoints": []}
+        if registry_path.exists():
+            with open(registry_path, encoding="utf-8") as f:
+                registry = json.load(f)
+
+        checkpoint_entry = {
+            "run_name": checkpoint_path.name,
+            "checkpoint_dir": str(checkpoint_path),
+            "val_f1": run_info.get("final_val_f1", 0.0),
+            "best_epoch": run_info.get("best_epoch", 0),
+            "timestamp": run_info.get("timestamp", ""),
+            "artifacts": [
+                "model.pt",
+                "tokenizer/",
+                "model_config.json",
+                "label_map.json",
+                "preprocessor_config.json",
+                "train_config.yaml",
+                "metrics.json",
+                "run_info.json",
+            ],
+        }
+        registry["checkpoints"].append(checkpoint_entry)
+
+        # Update best checkpoint if this is the best so far
+        if not registry["best_checkpoint"] or checkpoint_entry["val_f1"] >= max(
+            cp["val_f1"] for cp in registry["checkpoints"]
+        ):
+            registry["best_checkpoint"] = checkpoint_path.name
+
+        with open(registry_path, "w", encoding="utf-8") as f:
+            json.dump(registry, f, indent=2)

@@ -138,44 +138,67 @@ class BertSentimentClassifier(nn.Module):
         cls,
         checkpoint_dir: pathlib.Path | str,
         checkpoint_name: str | None = None,
-        num_labels: int = NUM_LABELS,
     ) -> "BertSentimentClassifier":
-        """Load model for inference with eval mode.
+        """Load model for inference with all required artifacts.
 
-        Convenience method that loads a checkpoint and puts the model
-        in eval mode automatically.
+        Step 1: Load model_config.json to rebuild architecture
+        Step 2: Load model.pt to load trained weights
+        Step 3: Set model to eval mode
+        Step 4: Load and attach label_map.json for output conversion
 
         Args:
-            checkpoint_dir: Directory containing the checkpoint file.
-            checkpoint_name: Name of checkpoint file. If None, finds
-                first .pt file in checkpoint_dir.
-            num_labels: Number of output labels. Defaults to 3.
+            checkpoint_dir: Directory containing checkpoint artifacts.
+            checkpoint_name: Name of model file. If None, uses 'model.pt'.
 
         Returns:
-            Loaded model in eval mode.
+            Model ready for prediction with attached label_map attribute.
 
         Raises:
-            FileNotFoundError: If checkpoint not found.
+            FileNotFoundError: If required files not found in checkpoint_dir.
         """
+        import json
+
         checkpoint_dir = pathlib.Path(checkpoint_dir)
 
-        # Find checkpoint file if not specified
+        # Step 1: Load model_config.json to rebuild architecture
+        model_config_path = checkpoint_dir / "model_config.json"
+        if not model_config_path.exists():
+            raise FileNotFoundError(f"model_config.json not found in {checkpoint_dir}")
+
+        with open(model_config_path, encoding="utf-8") as f:
+            model_config = json.load(f)
+
+        num_labels = model_config.get("num_labels", NUM_LABELS)
+
+        # Step 2: Create model and load weights
+        model = cls(num_labels=num_labels)
+
         if checkpoint_name is None:
-            checkpoint_files = list(checkpoint_dir.glob("*.pt"))
-            if not checkpoint_files:
-                raise FileNotFoundError(
-                    f"No checkpoint files found in {checkpoint_dir}"
-                )
-            checkpoint_path = checkpoint_files[0]
-            checkpoint_name = checkpoint_path.name
+            checkpoint_name = "model.pt"
 
-        # Load model via from_pretrained
-        model = cls.from_pretrained(
-            checkpoint_name=checkpoint_name,
-            checkpoints_dir=checkpoint_dir,
-            num_labels=num_labels,
+        checkpoint_path = checkpoint_dir / checkpoint_name
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        state_dict = torch.load(
+            checkpoint_path, map_location="cpu", weights_only=True
         )
+        model.load_state_dict(state_dict)
 
-        # Put in eval mode for inference
+        # Step 3: Set to eval mode (disables dropout)
         model.eval()
+
+        # Step 4: Load label_map.json for output conversion
+        label_map_path = checkpoint_dir / "label_map.json"
+        if not label_map_path.exists():
+            raise FileNotFoundError(f"label_map.json not found in {checkpoint_dir}")
+
+        with open(label_map_path, encoding="utf-8") as f:
+            label_map = json.load(f)
+
+        # Attach label maps to model for easy access during prediction
+        model.label_map = label_map
+        model.int_to_label = label_map["int_to_label"]
+        model.label_to_int = label_map["label_to_int"]
+
         return model

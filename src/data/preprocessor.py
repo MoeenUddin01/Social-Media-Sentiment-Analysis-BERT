@@ -6,6 +6,8 @@ URLs, mentions, and applying augmentation techniques.
 
 from __future__ import annotations
 
+import json
+import pathlib
 import re
 from typing import TYPE_CHECKING
 
@@ -128,3 +130,38 @@ class TextPreprocessor:
         )
 
         return torch.tensor(weights, dtype=torch.float32)
+
+    @classmethod
+    def load_config(cls, preprocessor_config_path: pathlib.Path | str) -> "TextPreprocessor":
+        """Load preprocessor configuration from JSON file.
+
+        Creates a TextPreprocessor with the exact same settings used
+        during training, ensuring prediction input is cleaned identically.
+
+        Args:
+            preprocessor_config_path: Path to preprocessor_config.json file.
+
+        Returns:
+            Configured TextPreprocessor instance.
+
+        Raises:
+            FileNotFoundError: If config file does not exist.
+        """
+        config_path = pathlib.Path(preprocessor_config_path)
+
+        if not config_path.exists():
+            raise FileNotFoundError(f"Preprocessor config not found: {config_path}")
+
+        with open(config_path, encoding="utf-8") as f:
+            config = json.load(f)
+
+        # Create preprocessor with loaded settings
+        preprocessor = cls(
+            lowercase=config.get("lowercase", True),
+            remove_emojis=config.get("handle_emojis", True),
+        )
+
+        # Configure cleaner with loaded settings
+        preprocessor.cleaner = TweetCleaner()
+
+        return preprocessor

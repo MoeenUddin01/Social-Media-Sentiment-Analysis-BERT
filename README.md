@@ -28,6 +28,47 @@ source .venv/bin/activate  # Linux/Mac
 pip install -e .
 ```
 
+### DagsHub Setup (Experiment Tracking)
+
+Install DagsHub and MLflow dependencies:
+
+```bash
+pip install dagshub mlflow
+```
+
+Set up your DagsHub credentials:
+
+```bash
+export DAGSHUB_TOKEN=your_token_here
+export MLFLOW_TRACKING_USERNAME=your_dagshub_username
+export MLFLOW_TRACKING_PASSWORD=your_dagshub_token
+dagshub login
+```
+
+Update `config.yaml` with your DagsHub repository:
+
+```yaml
+dagshub:
+  enabled: true
+  repo_owner: "your_dagshub_username"
+  repo_name: "bert-sentiment"
+  experiment_name: "bert-sentiment-analysis"
+```
+
+Then visit:
+[https://dagshub.com/{repo_owner}/bert-sentiment/experiments](https://dagshub.com/{repo_owner}/bert-sentiment/experiments)
+
+to see live charts updating every batch during training.
+
+**Charts that will appear on DagsHub dashboard:**
+- `train/batch_loss` → updates every batch (live)
+- `train/batch_accuracy` → updates every batch (live)
+- `val/f1_macro` → updates every epoch
+- `val/loss` → updates every epoch
+- `learning_rate` → updates every epoch (shows warmup curve)
+- `test/accuracy` → appears once at end
+- Confusion matrix → logged as image artifact every epoch
+
 ## Usage
 
 ### Data Preprocessing
