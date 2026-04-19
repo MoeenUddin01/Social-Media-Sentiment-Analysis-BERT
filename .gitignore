@@ -236,9 +236,13 @@ transformers_cache/
 *.ipynb
 .ipynb_checkpoints/
 
+# Allow notebooks in notebooks folder
+!notebooks/*.ipynb
+
 # OS files
 .DS_Store
 Thumbs.db
 artifacts/
 dataset/
 
+notebooks/
