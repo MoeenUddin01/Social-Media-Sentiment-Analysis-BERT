@@ -93,7 +93,19 @@ class DataPipeline:
         if not file_path.exists():
             raise FileNotFoundError(f"Raw data file not found: {file_path}")
 
-        df = pd.read_csv(file_path)
+        # Try multiple encodings for social media data
+        encodings = ['utf-8', 'ISO-8859-1', 'latin-1', 'cp1252']
+        df = None
+        for encoding in encodings:
+            try:
+                df = pd.read_csv(file_path, encoding=encoding)
+                self.logger.info(f"Successfully loaded CSV with {encoding} encoding")
+                break
+            except UnicodeDecodeError:
+                continue
+        
+        if df is None:
+            raise ValueError(f"Could not decode {filename} with any supported encoding")
 
         required_columns = ["text", "label"]
         for col in required_columns:
