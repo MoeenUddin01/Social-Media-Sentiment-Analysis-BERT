@@ -60,6 +60,75 @@ Then visit:
 
 to see live charts updating every batch during training.
 
+### Kaggle Training
+
+Run this project on Kaggle with GPU (T4/P100):
+
+**Setup Notebook Cells:**
+
+```python
+# Cell 1: Clone & Install
+!git clone https://github.com/MoeenUddin01/Social-Media-Sentiment-Analysis-BERT.git
+%cd Social-Media-Sentiment-Analysis-BERT
+!pip install -q -r requirements.txt dagshub mlflow
+!nvidia-smi
+```
+
+```python
+# Cell 2: DagsHub Authentication
+import os
+from getpass import getpass
+DAGSHUB_TOKEN = getpass("Enter DagsHub token: ")
+os.environ['DAGSHUB_TOKEN'] = DAGSHUB_TOKEN
+os.environ['MLFLOW_TRACKING_USERNAME'] = 'MoeenUddin01'
+os.environ['MLFLOW_TRACKING_PASSWORD'] = DAGSHUB_TOKEN
+```
+
+```python
+# Cell 3: Prepare Data
+import os, shutil
+os.makedirs('dataset/raw', exist_ok=True)
+shutil.copy('/kaggle/input/YOUR-DATASET/data.csv', 'dataset/raw/data.csv')
+```
+
+```python
+# Cell 4: Run Full Pipeline
+from src.pipelines.data_preprocessin import DataPipeline
+from src.pipelines.model_training import TrainingPipeline
+from src.models.tokenizer import SentimentTokenizer
+from src.models.bert_classifier import BertSentimentClassifier
+from src.utils.seed import get_device, set_seed
+from src.utils.logger import DagsHubLogger
+import yaml, dagshub
+
+# Setup
+dagshub.init(repo_owner='MoeenUddin01', 
+             repo_name='Social-Media-Sentiment-Analysis-BERT', mlflow=True)
+with open('config.yaml') as f:
+    config = yaml.safe_load(f)
+device = get_device()
+set_seed(42)
+
+# Data pipeline
+tokenizer = SentimentTokenizer()
+data_pipeline = DataPipeline(config, tokenizer)
+train_loader, val_loader, test_loader = data_pipeline.run('data.csv')
+
+# Training
+model = BertSentimentClassifier(num_labels=3).to(device)
+dagshub_logger = DagsHubLogger(config)
+training_pipeline = TrainingPipeline(
+    model=model, train_loader=train_loader, val_loader=val_loader,
+    device=device, config=config, dagshub_logger=dagshub_logger
+)
+training_pipeline.run(epochs=config['training']['epochs'])
+```
+
+**Important Artifacts to Save:**
+- `artifacts/checkpoints/` - Model weights
+- `artifacts/checkpoints/tokenizer/` - Tokenizer config
+- `artifacts/checkpoints/label_map.json` - Class mappings
+
 **Charts that will appear on DagsHub dashboard:**
 - `train/batch_loss` → updates every batch (live)
 - `train/batch_accuracy` → updates every batch (live)

@@ -6,15 +6,13 @@ and training callbacks.
 
 from __future__ import annotations
 
-from src.training.callbacks import EarlyStoppingCallback, ModelCheckpointCallback
-from src.training.evaluator import ModelEvaluator
-from src.training.scheduler import LearningRateSchedulerFactory
-from src.training.trainer import CustomTrainer
+from src.pipelines.callbacks import EarlyStopping, ModelCheckpoint
+from src.pipelines.evaluator import Evaluator
+from src.pipelines.scheduler import get_scheduler
 
 __all__ = [
-    "CustomTrainer",
-    "ModelEvaluator",
-    "LearningRateSchedulerFactory",
-    "EarlyStoppingCallback",
-    "ModelCheckpointCallback",
+    "EarlyStopping",
+    "ModelCheckpoint",
+    "Evaluator",
+    "get_scheduler",
 ]
