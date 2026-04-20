@@ -6,14 +6,14 @@ tokenizer management, and model configuration.
 
 from __future__ import annotations
 
-from src.models.bert_classifier import BertClassifier
-from src.models.config import ModelConfig
-from src.models.fine_tuner import BertFineTuner
-from src.models.tokenizer import TokenizerManager
+from src.models.bert_classifier import BertSentimentClassifier
+from src.models.evaluator import ModelEvaluator
+from src.models.fine_tuner import FineTuner
+from src.models.tokenizer import SentimentTokenizer
 
 __all__ = [
-    "BertClassifier",
-    "ModelConfig",
-    "BertFineTuner",
-    "TokenizerManager",
+    "BertSentimentClassifier",
+    "ModelEvaluator",
+    "FineTuner",
+    "SentimentTokenizer",
 ]
