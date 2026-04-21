@@ -38,6 +38,29 @@ class SentimentTokenizer:
         self.model_name = model_name
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
+    def __call__(self, text: str, max_length: int = 128, **kwargs) -> BatchEncoding:
+        """Tokenize a single text string.
+
+        Makes the tokenizer callable like the underlying HuggingFace tokenizer.
+        Used by SentimentDataset for single-sample tokenization.
+
+        Args:
+            text: Text string to tokenize.
+            max_length: Maximum sequence length. Defaults to 128.
+            **kwargs: Additional arguments passed to the tokenizer.
+
+        Returns:
+            BatchEncoding with 'input_ids' and 'attention_mask'.
+        """
+        return self.tokenizer(
+            text,
+            max_length=max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+            **kwargs
+        )
+
     def tokenize_batch(
         self,
         texts: list[str],
