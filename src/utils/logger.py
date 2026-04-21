@@ -116,23 +116,37 @@ class DagsHubLogger:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.run_name = f"{model_name}_{timestamp}"
 
-        # Initialize dagshub and mlflow
+        # Set up MLflow tracking URI first
+        mlflow.set_tracking_uri(self.tracking_uri)
+        
+        # Initialize dagshub (this sets up authentication)
         dagshub.init(
             repo_owner=self.repo_owner,
             repo_name=self.repo_name,
             mlflow=True,
         )
-        mlflow.set_tracking_uri(self.tracking_uri)
         
-        # Create experiment if it doesn't exist
+        # Create or get experiment - handle 404 by creating experiment
         try:
-            mlflow.create_experiment(self.experiment_name)
-            self._logger.info(f"Created new experiment: {self.experiment_name}")
-        except Exception:
-            # Experiment already exists
-            pass
+            experiment = mlflow.get_experiment_by_name(self.experiment_name)
+            if experiment is None:
+                experiment_id = mlflow.create_experiment(self.experiment_name)
+                self._logger.info(f"Created new experiment: {self.experiment_name} (ID: {experiment_id})")
+            else:
+                self._logger.info(f"Using existing experiment: {self.experiment_name}")
+        except Exception as e:
+            # If get fails, try creating directly
+            try:
+                experiment_id = mlflow.create_experiment(self.experiment_name)
+                self._logger.info(f"Created new experiment: {self.experiment_name}")
+            except Exception:
+                self._logger.warning(f"Could not create/get experiment: {e}")
         
-        mlflow.set_experiment(self.experiment_name)
+        # Now set the experiment
+        try:
+            mlflow.set_experiment(self.experiment_name)
+        except Exception as e:
+            self._logger.error(f"Failed to set experiment: {e}")
 
         self._logger = get_logger(__name__)
         self._logger.info(
