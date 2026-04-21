@@ -123,6 +123,15 @@ class DagsHubLogger:
             mlflow=True,
         )
         mlflow.set_tracking_uri(self.tracking_uri)
+        
+        # Create experiment if it doesn't exist
+        try:
+            mlflow.create_experiment(self.experiment_name)
+            self._logger.info(f"Created new experiment: {self.experiment_name}")
+        except Exception:
+            # Experiment already exists
+            pass
+        
         mlflow.set_experiment(self.experiment_name)
 
         self._logger = get_logger(__name__)
