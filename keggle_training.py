@@ -353,19 +353,136 @@ def _verbose_train_epoch(self, epoch: int) -> dict:
     return {"train_loss": avg_loss, "train_accuracy": accuracy}
 
 
-# Monkey-patch the verbose method onto the pipeline instance
+# Monkey-patch the verbose train_epoch onto the pipeline instance
 training_pipeline.train_epoch = types.MethodType(_verbose_train_epoch, training_pipeline)
+
+
+def _verbose_fit(self, num_epochs: int) -> dict:
+    """Verbose fit loop — prints a full epoch results box after every validation."""
+    from src.pipelines.callbacks import EarlyStopping, ModelCheckpoint
+
+    self._logger if hasattr(self, "_logger") else None
+
+    # Start DagsHub logging
+    if self.dagshub_logger is not None:
+        self.dagshub_logger.start_run()
+        self.dagshub_logger.log_config(self.config)
+
+    training_start = time.time()
+    best_val_acc = 0.0
+
+    for epoch in range(num_epochs):
+
+        # ── Train one epoch (verbose batch output) ───────────────────────────
+        train_metrics = self.train_epoch(epoch)
+
+        # ── Validate ─────────────────────────────────────────────────────────
+        print(f"  ⏳ Running validation for epoch {epoch + 1}...")
+        val_start = time.time()
+        val_metrics = self.validate(epoch, train_metrics=train_metrics)
+        val_time = time.time() - val_start
+
+        combined_metrics = {**train_metrics, **val_metrics}
+
+        # ── Update history ────────────────────────────────────────────────────
+        self.history["train_loss"].append(train_metrics["train_loss"])
+        self.history["train_accuracy"].append(train_metrics["train_accuracy"])
+        self.history["val_loss"].append(val_metrics["val_loss"])
+        self.history["val_accuracy"].append(val_metrics["val_accuracy"])
+        self.history["val_f1"].append(val_metrics["val_f1"])
+
+        # ── Best tracker ──────────────────────────────────────────────────────
+        is_best = val_metrics["val_accuracy"] > best_val_acc
+        if is_best:
+            best_val_acc = val_metrics["val_accuracy"]
+        best_marker = "  ⭐ NEW BEST!" if is_best else ""
+
+        # ── Total elapsed ─────────────────────────────────────────────────────
+        total_elapsed  = time.time() - training_start
+        tot_m, tot_s   = divmod(int(total_elapsed), 60)
+        val_m, val_s   = divmod(int(val_time), 60)
+
+        # ── EPOCH RESULTS BOX ─────────────────────────────────────────────────
+        print(f"\n{'╔' + '═' * 63 + '╗'}")
+        print(f"║  📊 EPOCH {epoch + 1}/{num_epochs} RESULTS"
+              f"{best_marker:<{40 - len(str(epoch+1)) - len(str(num_epochs))}}║")
+        print(f"{'╠' + '═' * 63 + '╣'}")
+        print(f"║  {'METRIC':<25}  {'TRAIN':>10}  {'VAL':>10}          ║")
+        print(f"║  {'─'*25}  {'─'*10}  {'─'*10}          ║")
+        print(f"║  {'Loss':<25}  "
+              f"{train_metrics['train_loss']:>10.4f}  "
+              f"{val_metrics['val_loss']:>10.4f}          ║")
+        print(f"║  {'Accuracy':<25}  "
+              f"{train_metrics['train_accuracy']:>10.4f}  "
+              f"{val_metrics['val_accuracy']:>10.4f}          ║")
+        print(f"║  {'F1 (macro)':<25}  "
+              f"{'—':>10}  "
+              f"{val_metrics.get('macro_f1', val_metrics.get('val_f1', 0.0)):>10.4f}          ║")
+        print(f"║  {'F1 (weighted)':<25}  "
+              f"{'—':>10}  "
+              f"{val_metrics.get('weighted_f1', 0.0):>10.4f}          ║")
+        print(f"║  {'Precision':<25}  "
+              f"{'—':>10}  "
+              f"{val_metrics.get('precision', 0.0):>10.4f}          ║")
+        print(f"║  {'Recall':<25}  "
+              f"{'—':>10}  "
+              f"{val_metrics.get('recall', 0.0):>10.4f}          ║")
+        print(f"{'╠' + '═' * 63 + '╣'}")
+        current_lr = self.optimizer.param_groups[0]["lr"]
+        print(f"║  Learning Rate: {current_lr:.2e}"
+              f"   │  Val time: {val_m}m{val_s:02d}s"
+              f"   │  Total: {tot_m}m{tot_s:02d}s"
+              f"{'': <5}║")
+        print(f"║  Best val_acc so far: {best_val_acc:.4f}"
+              f"  (epoch {self.history['val_accuracy'].index(best_val_acc) + 1})"
+              f"{'': <14}║")
+        print(f"{'╚' + '═' * 63 + '╝'}\n")
+
+        # ── Callbacks ─────────────────────────────────────────────────────────
+        should_stop = False
+        for callback in self.callbacks:
+            if isinstance(callback, EarlyStopping):
+                if callback(epoch, combined_metrics):
+                    should_stop = True
+                    print(f"  🛑 Early stopping triggered at epoch {epoch + 1}!")
+                    break
+            elif isinstance(callback, ModelCheckpoint):
+                callback(epoch, combined_metrics)
+
+        if should_stop:
+            break
+
+    # ── Final training summary ────────────────────────────────────────────────
+    total_elapsed = time.time() - training_start
+    tot_m, tot_s  = divmod(int(total_elapsed), 60)
+    best_epoch    = self.history["val_accuracy"].index(max(self.history["val_accuracy"]))
+
+    print(f"\n{'═' * 65}")
+    print(f"  🏆 TRAINING COMPLETE  —  {tot_m}m{tot_s:02d}s total")
+    print(f"  Best val_accuracy: {max(self.history['val_accuracy']):.4f}  "
+          f"(epoch {best_epoch + 1})")
+    print(f"  Best val_f1:       {max(self.history['val_f1']):.4f}")
+    print(f"  Epochs trained:    {len(self.history['train_loss'])}")
+    print(f"{'═' * 65}\n")
+
+    return self.history
+
+
+# Monkey-patch verbose fit (replaces the default fit)
+training_pipeline.fit = types.MethodType(_verbose_fit, training_pipeline)
 
 print("\n🚀 STARTING TRAINING!")
 print(f"   Verbose output every {PRINT_EVERY} batches")
+print(f"   Epoch results box shown after every validation")
 print(f"   All metrics streamed live → DagsHub\n")
 
 history = training_pipeline.fit(num_epochs=num_epochs)
 
 print("\n✅ Training complete!")
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# CELL 12: Save all artifacts
+# CELL 12: Save all artifacts & upload to DagsHub
 # ═══════════════════════════════════════════════════════════════════════════════
 print("💾 Saving training artifacts...")
 
@@ -377,13 +494,29 @@ from datetime import datetime
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 save_dir = checkpoint_dir / f"run_{timestamp}"
 
-# Save everything
+# ✅ FIX: mlflow.end_run() was already called inside fit().
+# Re-open the SAME run so artifact uploads go to the correct run on DagsHub.
+import mlflow
+_active_run_id = None
+if dagshub_logger is not None:
+    try:
+        # end_run() was already called; start a child run under the same experiment
+        # using the same run_name so DagsHub groups them correctly.
+        with mlflow.start_run(
+            run_name=dagshub_logger.run_name + "_artifacts",
+            nested=False,
+        ) as _artifact_run:
+            _active_run_id = _artifact_run.info.run_id
+    except Exception:
+        pass  # If this also fails, artifact upload will be skipped gracefully
+
+# Save all files locally first
 training_pipeline.save_all_artifacts(
     checkpoint_dir=save_dir,
     run_metadata={"keggle_run": True, "timestamp": timestamp},
 )
 
-print(f"✅ All artifacts saved to: {save_dir}")
+print(f"✅ All artifacts saved locally to: {save_dir}")
 print("\n📁 Saved artifacts:")
 print("   • model.pt - Best model weights")
 print("   • tokenizer/ - Tokenizer files")
@@ -392,6 +525,15 @@ print("   • label_map.json - Label mappings")
 print("   • metrics.json - Training history")
 print("   • run_info.json - Run metadata")
 print("   • confusion_matrix.png, *.png - Evaluation plots")
+
+# ✅ NOW upload to DagsHub (run is active)
+if dagshub_logger is not None and mlflow.active_run() is not None:
+    dagshub_logger.log_plots(save_dir)
+    dagshub_logger.log_model_artifact(save_dir)
+    print("\n✅ All artifacts uploaded to DagsHub!")
+elif dagshub_logger is not None:
+    print("\n⚠️  DagsHub run already closed — artifacts saved locally only.")
+    print(f"   You can upload manually from: {save_dir}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CELL 13: Final evaluation on test set
@@ -417,14 +559,19 @@ print(f"   Precision:   {test_metrics['precision']:.4f}")
 print(f"   Recall:      {test_metrics['recall']:.4f}")
 print("=" * 50)
 
-# Save test metrics to DAGs Hub
-if dagshub_logger is not None:
+# Save test metrics to DagsHub (run still active from Cell 12)
+if dagshub_logger is not None and mlflow.active_run() is not None:
     dagshub_logger.log_test_metrics(test_metrics)
-    print("\n✅ Test metrics logged to DAGs Hub!")
+    print("\n✅ Test metrics logged to DagsHub!")
 
-# Save evaluation report
+# Save evaluation report locally
 eval_pipeline.save_report(save_dir)
 print(f"✅ Evaluation report saved to: {save_dir}")
+
+# ✅ NOW close the MLflow run — after ALL uploads are done
+if mlflow.active_run() is not None:
+    mlflow.end_run()
+    print("✅ MLflow run closed cleanly.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CELL 14: Summary

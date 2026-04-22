@@ -325,9 +325,10 @@ class TrainingPipeline:
 
         self.logger.info("Training complete")
 
-        # End DagsHub logging if enabled
-        if self.dagshub_logger is not None:
-            self.dagshub_logger.end_run()
+        # NOTE: We intentionally do NOT call dagshub_logger.end_run() here.
+        # The MLflow run must stay open so that keggle_training.py Cell 12
+        # can upload artifacts and Cell 13 can log test metrics.
+        # end_run() is called at the end of Cell 13 in keggle_training.py.
 
         return self.history
 
