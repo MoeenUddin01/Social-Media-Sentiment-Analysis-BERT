@@ -252,9 +252,113 @@ print("   • plots/* (final evaluation charts)")
 print("=" * 70)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CELL 11: TRAIN! (with live progress bars)
+# CELL 11: TRAIN! (verbose every-5-batch output + live DagsHub logging)
 # ═══════════════════════════════════════════════════════════════════════════════
-print("\n🚀 STARTING TRAINING!\n")
+import time
+import types
+
+PRINT_EVERY = 5  # Print to console every N batches
+
+
+def _verbose_train_epoch(self, epoch: int) -> dict:
+    """Verbose training epoch — prints loss/accuracy every PRINT_EVERY batches."""
+    self.model.train()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+    total_batches = len(self.train_loader)
+    epoch_start = time.time()
+
+    print(f"\n{'═' * 65}")
+    print(f"  📅 EPOCH {epoch + 1}/{num_epochs}   "
+          f"({total_batches:,} batches  |  batch_size={config['training']['batch_size']})")
+    print(f"{'═' * 65}")
+
+    for batch_idx, batch in enumerate(self.train_loader):
+        batch_start = time.time()
+
+        input_ids      = batch["input_ids"].to(self.device)
+        attention_mask = batch["attention_mask"].to(self.device)
+        labels         = batch["labels"].to(self.device)
+
+        self.optimizer.zero_grad()
+        logits = self.model({"input_ids": input_ids, "attention_mask": attention_mask})
+        loss   = self._criterion(logits, labels)
+        loss.backward()
+
+        grad_clip = self.config.get("training", {}).get("gradient_clip", 1.0)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip)
+
+        self.optimizer.step()
+        self.scheduler.step()
+
+        # ── Batch metrics ───────────────────────────────────────────────────
+        batch_loss  = loss.item()
+        preds       = torch.argmax(logits, dim=-1)
+        batch_corr  = (preds == labels).sum().item()
+        batch_total = labels.size(0)
+        batch_acc   = batch_corr / batch_total if batch_total > 0 else 0.0
+
+        total_loss += batch_loss
+        correct    += batch_corr
+        total      += batch_total
+
+        # ── Console print every PRINT_EVERY batches ─────────────────────────
+        if (batch_idx + 1) % PRINT_EVERY == 0 or batch_idx == total_batches - 1:
+            elapsed      = time.time() - epoch_start
+            batches_done = batch_idx + 1
+            secs_per_bat = elapsed / batches_done
+            remaining    = (total_batches - batches_done) * secs_per_bat
+            pct_done     = 100.0 * batches_done / total_batches
+            run_acc      = correct / total if total > 0 else 0.0
+            run_loss     = total_loss / batches_done
+            current_lr   = self.optimizer.param_groups[0]["lr"]
+
+            # Build a simple ASCII progress bar
+            bar_len   = 30
+            filled    = int(bar_len * pct_done / 100)
+            bar       = "█" * filled + "░" * (bar_len - filled)
+
+            eta_m, eta_s = divmod(int(remaining), 60)
+            elapsed_m, elapsed_s = divmod(int(elapsed), 60)
+
+            print(
+                f"  [{bar}] {pct_done:5.1f}%  "
+                f"batch {batches_done:>6,}/{total_batches:,}  │  "
+                f"loss={run_loss:.4f}  acc={run_acc:.4f}  "
+                f"lr={current_lr:.2e}  │  "
+                f"elapsed={elapsed_m}m{elapsed_s:02d}s  eta={eta_m}m{eta_s:02d}s"
+            )
+
+        # ── DagsHub batch logging ────────────────────────────────────────────
+        if self.dagshub_logger is not None:
+            self.dagshub_logger.log_batch_metrics(
+                batch=batch_idx,
+                epoch=epoch,
+                loss=batch_loss,
+                accuracy=batch_acc,
+                total_batches=total_batches,
+            )
+
+    # ── Epoch summary ────────────────────────────────────────────────────────
+    avg_loss = total_loss / total_batches if total_batches > 0 else 0.0
+    accuracy = correct / total if total > 0 else 0.0
+    epoch_time = time.time() - epoch_start
+    ep_m, ep_s = divmod(int(epoch_time), 60)
+
+    print(f"  {'─' * 63}")
+    print(f"  ✅ Epoch {epoch + 1} done in {ep_m}m{ep_s:02d}s")
+    print(f"     avg_loss={avg_loss:.4f}  |  avg_accuracy={accuracy:.4f}")
+
+    return {"train_loss": avg_loss, "train_accuracy": accuracy}
+
+
+# Monkey-patch the verbose method onto the pipeline instance
+training_pipeline.train_epoch = types.MethodType(_verbose_train_epoch, training_pipeline)
+
+print("\n🚀 STARTING TRAINING!")
+print(f"   Verbose output every {PRINT_EVERY} batches")
+print(f"   All metrics streamed live → DagsHub\n")
 
 history = training_pipeline.fit(num_epochs=num_epochs)
 
