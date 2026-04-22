@@ -48,8 +48,8 @@ logging:
 
 dagshub:
   enabled: true
-  repo_owner: "your_dagshub_username"
-  repo_name: "bert-sentiment"
+  repo_owner: "MoeenUddin01"
+  repo_name: "Social-Media-Sentiment-Analysis-BERT"
   experiment_name: "bert-sentiment-analysis"
-  tracking_uri: "https://dagshub.com/{repo_owner}/{repo_name}.mlflow"
+  tracking_uri: "https://dagshub.com/MoeenUddin01/Social-Media-Sentiment-Analysis-BERT.mlflow"
   log_every_n_batches: 1

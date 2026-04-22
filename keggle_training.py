@@ -89,8 +89,8 @@ config["training"]["learning_rate"] = 2e-5
 config["dagshub"]["enabled"] = True
 
 # IMPORTANT: Set your DAGs Hub credentials here!
-config["dagshub"]["repo_owner"] = "your_username"  # ← Change this
-config["dagshub"]["repo_name"] = "bert-sentiment"  # ← Change this
+config["dagshub"]["repo_owner"] = "MoeenUddin01"  # ← Your DagsHub username
+config["dagshub"]["repo_name"] = "Social-Media-Sentiment-Analysis-BERT"  # ← Your DagsHub repo name
 
 print("📋 Configuration loaded:")
 print(f"   Model: {config['model']['name']}")
