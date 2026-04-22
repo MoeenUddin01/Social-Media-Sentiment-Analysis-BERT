@@ -98,6 +98,9 @@ class DagsHubLogger:
         Raises:
             KeyError: If required dagshub config keys are missing.
         """
+        # Initialise logger FIRST so it is available in all code below
+        self._logger = get_logger(__name__)
+
         dagshub_config = config.get("dagshub", {})
 
         self.repo_owner = dagshub_config.get("repo_owner", "your_dagshub_username")
@@ -148,7 +151,6 @@ class DagsHubLogger:
         except Exception as e:
             self._logger.error(f"Failed to set experiment: {e}")
 
-        self._logger = get_logger(__name__)
         self._logger.info(
             f"DagsHubLogger initialized for {self.repo_owner}/{self.repo_name}"
         )
