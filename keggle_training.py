@@ -257,7 +257,7 @@ print("=" * 70)
 import time
 import types
 
-PRINT_EVERY = 5  # Print to console every N batches
+PRINT_EVERY = 500  # Print to console every 500 batches to reduce spam
 
 
 def _verbose_train_epoch(self, epoch: int) -> dict:
