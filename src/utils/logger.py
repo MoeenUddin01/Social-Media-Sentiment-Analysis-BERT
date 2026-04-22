@@ -193,9 +193,9 @@ class DagsHubLogger:
             Exception: If MLflow start_run fails.
         """
         try:
-            # ✅ FIX: dagshub.init() sometimes auto-starts a run internally.
-            # End it cleanly before starting our named run.
-            if mlflow.active_run() is not None:
+            # ✅ FIX: dagshub.init() and previous failed cells can leave multiple
+            # nested or stacked runs active. End all of them cleanly.
+            while mlflow.active_run() is not None:
                 self._logger.warning(
                     "An MLflow run is already active — ending it before "
                     "starting the training run."
