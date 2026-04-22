@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 import dagshub
 import mlflow
 import mlflow.pytorch
-from dagshub.upload import Repo
 
 if TYPE_CHECKING:
     import pathlib
@@ -119,37 +118,65 @@ class DagsHubLogger:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.run_name = f"{model_name}_{timestamp}"
 
-        # Set up MLflow tracking URI first
-        mlflow.set_tracking_uri(self.tracking_uri)
-        
-        # Initialize dagshub (this sets up authentication)
-        dagshub.init(
-            repo_owner=self.repo_owner,
-            repo_name=self.repo_name,
-            mlflow=True,
-        )
-        
-        # Create or get experiment - handle 404 by creating experiment
+        # ── Step 1: Ensure auth env vars are set BEFORE any dagshub/mlflow ──
+        # Pick up DAGSHUB_TOKEN (set via Kaggle Secrets or .env) and mirror it
+        # into the two env vars that MLflow's HTTP client actually reads.
+        token = os.environ.get("DAGSHUB_TOKEN", "")
+        if token:
+            os.environ.setdefault("MLFLOW_TRACKING_USERNAME", self.repo_owner)
+            os.environ.setdefault("MLFLOW_TRACKING_PASSWORD", token)
+
+        # ── Step 2: Try dagshub.init() — falls back to raw MLflow if it fails ──
+        try:
+            # dags_hub_init also calls mlflow.set_tracking_uri internally
+            # when mlflow=True, but we set it first as a safety net.
+            mlflow.set_tracking_uri(self.tracking_uri)
+            dagshub.init(
+                repo_owner=self.repo_owner,
+                repo_name=self.repo_name,
+                mlflow=True,
+            )
+            self._logger.info(
+                f"dagshub.init() succeeded for {self.repo_owner}/{self.repo_name}"
+            )
+        except Exception as exc:
+            # dagshub.init() sometimes tries to open a browser on fresh envs.
+            # Fall back to pure MLflow HTTP auth using the env vars we set above.
+            self._logger.warning(
+                f"dagshub.init() raised {exc!r} — falling back to direct MLflow auth."
+            )
+            mlflow.set_tracking_uri(self.tracking_uri)
+
+        # ── Step 3: Create / get experiment ──────────────────────────────────
         try:
             experiment = mlflow.get_experiment_by_name(self.experiment_name)
             if experiment is None:
                 experiment_id = mlflow.create_experiment(self.experiment_name)
-                self._logger.info(f"Created new experiment: {self.experiment_name} (ID: {experiment_id})")
+                self._logger.info(
+                    f"Created new experiment: {self.experiment_name} "
+                    f"(ID: {experiment_id})"
+                )
             else:
-                self._logger.info(f"Using existing experiment: {self.experiment_name}")
-        except Exception as e:
+                self._logger.info(
+                    f"Using existing experiment: {self.experiment_name}"
+                )
+        except Exception as exc:
             # If get fails, try creating directly
             try:
-                experiment_id = mlflow.create_experiment(self.experiment_name)
-                self._logger.info(f"Created new experiment: {self.experiment_name}")
+                mlflow.create_experiment(self.experiment_name)
+                self._logger.info(
+                    f"Created new experiment after error: {self.experiment_name}"
+                )
             except Exception:
-                self._logger.warning(f"Could not create/get experiment: {e}")
-        
-        # Now set the experiment
+                self._logger.warning(
+                    f"Could not create/get experiment: {exc}"
+                )
+
+        # ── Step 4: Set active experiment ─────────────────────────────────────
         try:
             mlflow.set_experiment(self.experiment_name)
-        except Exception as e:
-            self._logger.error(f"Failed to set experiment: {e}")
+        except Exception as exc:
+            self._logger.error(f"Failed to set experiment: {exc}")
 
         self._logger.info(
             f"DagsHubLogger initialized for {self.repo_owner}/{self.repo_name}"
