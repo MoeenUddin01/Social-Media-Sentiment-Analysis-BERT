@@ -193,17 +193,21 @@ class DagsHubLogger:
             Exception: If MLflow start_run fails.
         """
         try:
-            # ✅ FIX: dagshub.init() and previous failed cells can leave multiple
-            # nested or stacked runs active. End all of them cleanly.
-            while mlflow.active_run() is not None:
-                self._logger.warning(
-                    "An MLflow run is already active — ending it before "
-                    "starting the training run."
-                )
-                mlflow.end_run()
-
-            mlflow.start_run(run_name=self.run_name)
-            self._logger.info(f"Started MLflow run: {self.run_name}")
+            # ✅ FIX: Kaggle/notebooks often invisibly keep an MLflow run alive.
+            # End the current run if possible.
+            import os
+            os.environ.pop("MLFLOW_RUN_ID", None)
+            
+            try:
+                if mlflow.active_run() is not None:
+                    mlflow.end_run()
+            except Exception:
+                pass
+                
+            # If a run is still somehow active in the environment stack, nested=True
+            # guarantees this will succeed by making it a child run (which works perfectly).
+            mlflow.start_run(run_name=self.run_name, nested=True)
+            self._logger.info(f"Started MLflow run: {self.run_name} (nested=True)")
 
             # Log configuration parameters (flattened)
             self._log_config_params()
