@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from src.models.bert_classifier import BertSentimentClassifier
 from src.models.evaluator import ModelEvaluator
@@ -119,7 +120,15 @@ class TrainingPipeline:
         correct = 0
         total = 0
 
-        for batch_idx, batch in enumerate(self.train_loader):
+        # Progress bar for Keggle/notebook visibility
+        pbar = tqdm(
+            enumerate(self.train_loader),
+            total=self._total_batches,
+            desc=f"Epoch {epoch + 1}",
+            leave=False,
+        )
+
+        for batch_idx, batch in pbar:
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
             labels = batch["labels"].to(self.device)
@@ -150,6 +159,12 @@ class TrainingPipeline:
             correct += batch_correct
             total += batch_total
 
+            # Update progress bar
+            pbar.set_postfix({
+                "loss": f"{batch_loss:.4f}",
+                "acc": f"{batch_accuracy:.4f}",
+            })
+
             # Log batch metrics to DagsHub
             if self.dagshub_logger is not None:
                 self.dagshub_logger.log_batch_metrics(
@@ -159,6 +174,8 @@ class TrainingPipeline:
                     accuracy=batch_accuracy,
                     total_batches=self._total_batches,
                 )
+
+        pbar.close()
 
         avg_loss = (
             total_loss / len(self.train_loader) if len(self.train_loader) > 0 else 0.0

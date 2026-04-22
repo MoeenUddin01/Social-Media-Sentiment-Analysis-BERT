@@ -107,6 +107,15 @@ class DataPipeline:
         if df is None:
             raise ValueError(f"Could not decode {filename} with any supported encoding")
 
+        # Check if this is a headerless sentiment140 format (6 columns: polarity, id, date, query, user, text)
+        if len(df.columns) == 6 and "text" not in df.columns:
+            # Likely sentiment140 format without headers
+            df.columns = ["polarity", "id", "date", "query", "user", "text"]
+            # Map polarity: 0=negative, 2=neutral, 4=positive -> 0,1,2
+            polarity_map = {0: 0, 2: 1, 4: 2}
+            df["label"] = df["polarity"].map(polarity_map)
+            self.logger.info("Detected sentiment140 format, mapped polarity to label")
+
         required_columns = ["text", "label"]
         for col in required_columns:
             if col not in df.columns:
