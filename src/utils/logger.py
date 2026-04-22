@@ -193,6 +193,15 @@ class DagsHubLogger:
             Exception: If MLflow start_run fails.
         """
         try:
+            # ✅ FIX: dagshub.init() sometimes auto-starts a run internally.
+            # End it cleanly before starting our named run.
+            if mlflow.active_run() is not None:
+                self._logger.warning(
+                    "An MLflow run is already active — ending it before "
+                    "starting the training run."
+                )
+                mlflow.end_run()
+
             mlflow.start_run(run_name=self.run_name)
             self._logger.info(f"Started MLflow run: {self.run_name}")
 
@@ -202,6 +211,7 @@ class DagsHubLogger:
         except Exception as e:
             self._logger.error(f"Failed to start MLflow run: {e}")
             raise
+
 
     def _log_config_params(self) -> None:
         """Log configuration parameters as MLflow params.
