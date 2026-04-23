@@ -182,12 +182,16 @@ class DagsHubLogger:
             f"DagsHubLogger initialized for {self.repo_owner}/{self.repo_name}"
         )
 
-    def start_run(self) -> None:
-        """Start an MLflow run and log all configuration parameters.
+    def start_run(self, run_id: str | None = None) -> None:
+        """Start or resume an MLflow run and log all configuration parameters.
 
-        Starts the run with the generated run_name and logs:
+        Starts the run with the generated run_name, or resumes if run_id is passed.
+        Logs:
         - All config.yaml values as flat key-value params
         - Model and training hyperparameters
+
+        Args:
+            run_id: Optional ID of an existing MLflow run to resume.
 
         Raises:
             Exception: If MLflow start_run fails.
@@ -206,14 +210,18 @@ class DagsHubLogger:
                 
             # If a run is still somehow active in the environment stack, nested=True
             # guarantees this will succeed by making it a child run (which works perfectly).
-            mlflow.start_run(run_name=self.run_name, nested=True)
-            self._logger.info(f"Started MLflow run: {self.run_name} (nested=True)")
+            if run_id is not None:
+                mlflow.start_run(run_id=run_id, nested=True)
+                self._logger.info(f"Resumed MLflow run: {run_id} (nested=True)")
+            else:
+                mlflow.start_run(run_name=self.run_name, nested=True)
+                self._logger.info(f"Started MLflow run: {self.run_name} (nested=True)")
 
             # Log configuration parameters (flattened)
             self._log_config_params()
 
         except Exception as e:
-            self._logger.error(f"Failed to start MLflow run: {e}")
+            self._logger.error(f"Failed to start/resume MLflow run: {e}")
             raise
 
 

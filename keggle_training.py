@@ -358,20 +358,73 @@ training_pipeline.train_epoch = types.MethodType(_verbose_train_epoch, training_
 
 
 def _verbose_fit(self, num_epochs: int) -> dict:
-    """Verbose fit loop — prints a full epoch results box after every validation."""
+    """Verbose fit loop with MLflow Resume & Cloud sync.
+    
+    Checks DagsHub for a previous failed/stopped run, downloads the 
+    checkpoint, and resumes cleanly. Saves & uploads state every epoch.
+    """
     from src.pipelines.callbacks import EarlyStopping, ModelCheckpoint
+    import os
+    import torch
 
     self._logger if hasattr(self, "_logger") else None
 
-    # Start DagsHub logging
-    if self.dagshub_logger is not None:
-        self.dagshub_logger.start_run()
-        self.dagshub_logger.log_config(self.config)
-
-    training_start = time.time()
+    # Step 1: Detect Resume State from DagsHub 
+    resume_run_id = None
+    start_epoch = 0
     best_val_acc = 0.0
 
-    for epoch in range(num_epochs):
+    if self.dagshub_logger is not None:
+        import mlflow
+        from mlflow.exceptions import MlflowException
+        try:
+            experiment = mlflow.get_experiment_by_name(self.dagshub_logger.experiment_name)
+            if experiment:
+                runs = mlflow.search_runs(
+                    experiment_ids=[experiment.experiment_id], 
+                    order_by=["start_time DESC"],
+                    max_results=1
+                )
+                if not runs.empty:
+                    candidate_run = runs.iloc[0]
+                    # If it's a recent run that didn't necessarily finish or we want to resume
+                    resume_run_id = candidate_run.run_id
+                    print(f"  🔍 Found previous DagsHub run: {resume_run_id}")
+                    
+                    # Try to download the checkpoint
+                    try:
+                        print("  ☁️ Downloading latest checkpoint from DagsHub...")
+                        ckpt_path = mlflow.artifacts.download_artifacts(
+                            run_id=resume_run_id, 
+                            artifact_path="cloud_checkpoint.pt"
+                        )
+                        if os.path.exists(ckpt_path):
+                            checkpoint = torch.load(ckpt_path, map_location=self.device)
+                            
+                            self.model.load_state_dict(checkpoint["model_state_dict"])
+                            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                            if "scheduler_state_dict" in checkpoint and hasattr(self, "scheduler"):
+                                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                                
+                            start_epoch = checkpoint["epoch"] + 1
+                            self.history = checkpoint.get("history", self.history)
+                            if len(self.history.get("val_accuracy", [])) > 0:
+                                best_val_acc = max(self.history["val_accuracy"])
+                                
+                            print(f"  ✅ Successfully restored model at Epoch {start_epoch}!")
+                    except MlflowException:
+                        print("  ⚠️ No cloud checkpoint found in this run. Starting fresh.")
+        except Exception as e:
+            print(f"  ⚠️ Could not query DagsHub for resume: {e}")
+
+        # Start or Resume the MLflow run
+        self.dagshub_logger.start_run(run_id=resume_run_id)
+        if start_epoch == 0:
+            self.dagshub_logger.log_config(self.config)
+
+    training_start = time.time()
+
+    for epoch in range(start_epoch, num_epochs):
 
         # ── Train one epoch (verbose batch output) ───────────────────────────
         train_metrics = self.train_epoch(epoch)
@@ -397,12 +450,12 @@ def _verbose_fit(self, num_epochs: int) -> dict:
             best_val_acc = val_metrics["val_accuracy"]
         best_marker = "  ⭐ NEW BEST!" if is_best else ""
 
-        # ── Total elapsed ─────────────────────────────────────────────────────
+        # ── EPOCH RESULTS BOX ─────────────────────────────────────────────────
         total_elapsed  = time.time() - training_start
         tot_m, tot_s   = divmod(int(total_elapsed), 60)
         val_m, val_s   = divmod(int(val_time), 60)
+        current_lr = self.optimizer.param_groups[0]["lr"]
 
-        # ── EPOCH RESULTS BOX ─────────────────────────────────────────────────
         print(f"\n{'╔' + '═' * 63 + '╗'}")
         print(f"║  📊 EPOCH {epoch + 1}/{num_epochs} RESULTS"
               f"{best_marker:<{40 - len(str(epoch+1)) - len(str(num_epochs))}}║")
@@ -418,17 +471,7 @@ def _verbose_fit(self, num_epochs: int) -> dict:
         print(f"║  {'F1 (macro)':<25}  "
               f"{'—':>10}  "
               f"{val_metrics.get('macro_f1', val_metrics.get('val_f1', 0.0)):>10.4f}          ║")
-        print(f"║  {'F1 (weighted)':<25}  "
-              f"{'—':>10}  "
-              f"{val_metrics.get('weighted_f1', 0.0):>10.4f}          ║")
-        print(f"║  {'Precision':<25}  "
-              f"{'—':>10}  "
-              f"{val_metrics.get('precision', 0.0):>10.4f}          ║")
-        print(f"║  {'Recall':<25}  "
-              f"{'—':>10}  "
-              f"{val_metrics.get('recall', 0.0):>10.4f}          ║")
         print(f"{'╠' + '═' * 63 + '╣'}")
-        current_lr = self.optimizer.param_groups[0]["lr"]
         print(f"║  Learning Rate: {current_lr:.2e}"
               f"   │  Val time: {val_m}m{val_s:02d}s"
               f"   │  Total: {tot_m}m{tot_s:02d}s"
@@ -448,22 +491,40 @@ def _verbose_fit(self, num_epochs: int) -> dict:
                     break
             elif isinstance(callback, ModelCheckpoint):
                 callback(epoch, combined_metrics)
+                
+        # ── ☁️ Upload Checkpoint to DagsHub ──────────────────────────────────
+        try:
+            print("  ☁️ Syncing Cloud Checkpoint to DagsHub...")
+            ckpt_data = {
+                "epoch": epoch,
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "scheduler_state_dict": self.scheduler.state_dict() if hasattr(self, "scheduler") else None,
+                "history": self.history
+            }
+            os.makedirs("artifacts/cloud", exist_ok=True)
+            torch.save(ckpt_data, "artifacts/cloud/cloud_checkpoint.pt")
+            if mlflow.active_run() is not None:
+                mlflow.log_artifact("artifacts/cloud/cloud_checkpoint.pt")
+            print("  ✅ Cloud sync complete.")
+        except Exception as e:
+            print(f"  ⚠️ Failed to sync checkpoint to cloud: {e}")
 
         if should_stop:
             break
 
     # ── Final training summary ────────────────────────────────────────────────
-    total_elapsed = time.time() - training_start
-    tot_m, tot_s  = divmod(int(total_elapsed), 60)
-    best_epoch    = self.history["val_accuracy"].index(max(self.history["val_accuracy"]))
+    if len(self.history.get("val_accuracy", [])) > 0:
+        total_elapsed = time.time() - training_start
+        tot_m, tot_s  = divmod(int(total_elapsed), 60)
+        best_epoch    = self.history["val_accuracy"].index(max(self.history["val_accuracy"]))
 
-    print(f"\n{'═' * 65}")
-    print(f"  🏆 TRAINING COMPLETE  —  {tot_m}m{tot_s:02d}s total")
-    print(f"  Best val_accuracy: {max(self.history['val_accuracy']):.4f}  "
-          f"(epoch {best_epoch + 1})")
-    print(f"  Best val_f1:       {max(self.history['val_f1']):.4f}")
-    print(f"  Epochs trained:    {len(self.history['train_loss'])}")
-    print(f"{'═' * 65}\n")
+        print(f"\n{'═' * 65}")
+        print(f"  🏆 TRAINING COMPLETE  —  {tot_m}m{tot_s:02d}s elapsed")
+        print(f"  Best val_accuracy: {max(self.history['val_accuracy']):.4f}  "
+              f"(epoch {best_epoch + 1})")
+        print(f"  Best val_f1:       {max(self.history['val_f1']):.4f}")
+        print(f"{'═' * 65}\n")
 
     return self.history
 
