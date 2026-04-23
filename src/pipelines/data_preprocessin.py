@@ -121,10 +121,20 @@ class DataPipeline:
             if col not in df.columns:
                 raise KeyError(f"Required column '{col}' not found in {filename}")
 
+        # ── Added: Subsample dataset for much faster iteration ──
+        target_n = 200000
+        self.logger.info(f"Subsampling dataset to {target_n} per class...")
+        df = (
+            df.groupby("label", group_keys=False)
+            .apply(lambda x: x.sample(n=min(len(x), target_n), random_state=42))
+            .sample(frac=1, random_state=42)
+            .reset_index(drop=True)
+        )
+
         missing_count = df.isnull().sum().sum()
         duplicate_count = df.duplicated().sum()
 
-        self.logger.info(f"Loaded {len(df)} rows from {filename}")
+        self.logger.info(f"Final sampled dataset size: {len(df)} rows")
         self.logger.info(
             f"Missing values: {missing_count}, Duplicates: {duplicate_count}"
         )
